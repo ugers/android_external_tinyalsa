@@ -26,6 +26,10 @@
 ** DAMAGE.
 */
 
+#define LOG_TAG "alsa_pcm"
+#define LOG_NDEBUG 0
+#include <cutils/log.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -121,6 +125,69 @@ static unsigned int param_get_int(struct snd_pcm_hw_params *p, int n)
     return 0;
 }
 
+#define DEBUG 0
+#if DEBUG
+static const char *param_name[PARAM_MAX+1] = {
+    [SNDRV_PCM_HW_PARAM_ACCESS] = "access",
+    [SNDRV_PCM_HW_PARAM_FORMAT] = "format",
+    [SNDRV_PCM_HW_PARAM_SUBFORMAT] = "subformat",
+
+    [SNDRV_PCM_HW_PARAM_SAMPLE_BITS] = "sample_bits",
+    [SNDRV_PCM_HW_PARAM_FRAME_BITS] = "frame_bits",
+    [SNDRV_PCM_HW_PARAM_CHANNELS] = "channels",
+    [SNDRV_PCM_HW_PARAM_RATE] = "rate",
+    [SNDRV_PCM_HW_PARAM_PERIOD_TIME] = "period_time",
+    [SNDRV_PCM_HW_PARAM_PERIOD_SIZE] = "period_size",
+    [SNDRV_PCM_HW_PARAM_PERIOD_BYTES] = "period_bytes",
+    [SNDRV_PCM_HW_PARAM_PERIODS] = "periods",
+    [SNDRV_PCM_HW_PARAM_BUFFER_TIME] = "buffer_time",
+    [SNDRV_PCM_HW_PARAM_BUFFER_SIZE] = "buffer_size",
+    [SNDRV_PCM_HW_PARAM_BUFFER_BYTES] = "buffer_bytes",
+    [SNDRV_PCM_HW_PARAM_TICK_TIME] = "tick_time",
+};
+
+static void param_dump(struct snd_pcm_hw_params *p)
+{
+    int n;
+
+    for (n = SNDRV_PCM_HW_PARAM_FIRST_MASK;
+         n <= SNDRV_PCM_HW_PARAM_LAST_MASK; n++) {
+            struct snd_mask *m = param_to_mask(p, n);
+            ALOGV("%s = %08x%08x\n", param_name[n],
+                   m->bits[1], m->bits[0]);
+    }
+    for (n = SNDRV_PCM_HW_PARAM_FIRST_INTERVAL;
+         n <= SNDRV_PCM_HW_PARAM_LAST_INTERVAL; n++) {
+            struct snd_interval *i = param_to_interval(p, n);
+            ALOGV("%s = (%d,%d) omin=%d omax=%d int=%d empty=%d\n",
+                   param_name[n], i->min, i->max, i->openmin,
+                   i->openmax, i->integer, i->empty);
+    }
+    ALOGV("info = %08x\n", p->info);
+    ALOGV("msbits = %d\n", p->msbits);
+    ALOGV("rate = %d/%d\n", p->rate_num, p->rate_den);
+    ALOGV("fifo = %d\n", (int) p->fifo_size);
+}
+
+static void info_dump(struct snd_pcm_info *info)
+{
+    ALOGV("device = %d\n", info->device);
+    ALOGV("subdevice = %d\n", info->subdevice);
+    ALOGV("stream = %d\n", info->stream);
+    ALOGV("card = %d\n", info->card);
+    ALOGV("id = '%s'\n", info->id);
+    ALOGV("name = '%s'\n", info->name);
+    ALOGV("subname = '%s'\n", info->subname);
+    ALOGV("dev_class = %d\n", info->dev_class);
+    ALOGV("dev_subclass = %d\n", info->dev_subclass);
+    ALOGV("subdevices_count = %d\n", info->subdevices_count);
+    ALOGV("subdevices_avail = %d\n", info->subdevices_avail);
+}
+#else
+static void param_dump(struct snd_pcm_hw_params *p) {}
+static void info_dump(struct snd_pcm_info *info) {}
+#endif
+
 static void param_init(struct snd_pcm_hw_params *p)
 {
     int n;
@@ -157,6 +224,10 @@ struct pcm {
     void *mmap_buffer;
     unsigned int noirq_frames_per_msec;
     int wait_for_avail_min;
+    
+    // star add
+  int capture_channels;
+  short * p_capture_buf;
 };
 
 unsigned int pcm_get_buffer_size(struct pcm *pcm)
@@ -357,7 +428,7 @@ int pcm_get_htimestamp(struct pcm *pcm, unsigned int *avail,
 
     if (frames < 0)
         frames += pcm->boundary;
-    else if (frames > (int)pcm->boundary)
+    else if (frames >= (int)pcm->boundary)
         frames -= pcm->boundary;
 
     *avail = (unsigned int)frames;
@@ -409,8 +480,8 @@ int pcm_read(struct pcm *pcm, void *data, unsigned int count)
     if (!(pcm->flags & PCM_IN))
         return -EINVAL;
 
-    x.buf = data;
-    x.frames = count / (pcm->config.channels *
+    x.buf = (void *)pcm->p_capture_buf;
+    x.frames = count / (pcm->capture_channels *
                         pcm_format_to_bits(pcm->config.format) / 8);
 
     for (;;) {
@@ -429,8 +500,29 @@ int pcm_read(struct pcm *pcm, void *data, unsigned int count)
             }
             return oops(pcm, errno, "cannot read stream data");
         }
-        return 0;
+        break;
     }
+    if (pcm->capture_channels == 1)
+  {
+    short * p_out_data = data;
+    int offset = 0, cnt = 0;
+    for (cnt = 0; cnt < x.frames; cnt++)
+    {
+      offset = cnt << 1;    // short
+      *(p_out_data + cnt) =  (*(pcm->p_capture_buf + offset) >> 1) + (*(pcm->p_capture_buf + offset + 1) >> 1);
+    }
+  }
+  else
+  {
+    int cnt = 0;
+    short * p_out_data = data;
+    for (cnt = 0; cnt < (count >> 1); cnt++)
+    {
+      *(p_out_data + cnt) = *(pcm->p_capture_buf + cnt);
+    }
+  }
+
+  return 0;
 }
 
 static struct pcm bad_pcm = {
@@ -454,9 +546,236 @@ int pcm_close(struct pcm *pcm)
     pcm->running = 0;
     pcm->buffer_size = 0;
     pcm->fd = -1;
+    
+    if (pcm->p_capture_buf != 0)
+  {
+    free(pcm->p_capture_buf);
+    pcm->p_capture_buf = 0;
+  }
     free(pcm);
     return 0;
 }
+
+static int pcm_rate[] = {8000,
+						11025,
+						12000,
+						16000,
+						22050,
+						24000,
+						32000,
+						44100,
+						48000};
+
+static int size_rate = sizeof(pcm_rate) / sizeof(pcm_rate[0]);
+
+struct pcm *pcm_open_req(unsigned int card, unsigned int device,
+                     unsigned int flags, struct pcm_config *config, int requested_rate)
+{
+    struct pcm *pcm;
+    struct snd_pcm_info info;
+    struct snd_pcm_hw_params params;
+    struct snd_pcm_sw_params sparams;
+    char fn[256];
+    int rc;
+	int index = 0, cnt = 0;
+	int ret = -1;
+
+	ALOGV("pcm_open_req, %s card: %d, device: %d, req_rate: %d", 
+		(flags & PCM_IN ? "capture" : "playback"), card, device, requested_rate);
+
+    pcm = calloc(1, sizeof(struct pcm));
+    if (!pcm || !config)
+        return &bad_pcm; /* TODO: could support default config here */
+
+    pcm->config = *config;
+
+    snprintf(fn, sizeof(fn), "/dev/snd/pcmC%uD%u%c", card, device,
+             flags & PCM_IN ? 'c' : 'p');
+
+	pcm->capture_channels = config->in_init_channels ;
+	if ((flags & PCM_IN) && (config->in_init_channels == 1))
+	{
+		config->channels = 2;		// set hw params stereo(2 channels)
+		ALOGV("force capture stereo audio");			
+	}
+
+	if ((flags & PCM_IN))
+	{
+		pcm->p_capture_buf = (short*)calloc(1, 1024 * 8);
+		if (pcm->p_capture_buf == 0)
+		{
+			ALOGE("calloc capture buffer failed");
+			goto fail_close;
+		}
+	}
+
+    pcm->flags = flags;
+    pcm->fd = open(fn, O_RDWR);
+    if (pcm->fd < 0) {
+        oops(pcm, errno, "cannot open device '%s'", fn);
+        return pcm;
+    }
+
+    if (ioctl(pcm->fd, SNDRV_PCM_IOCTL_INFO, &info)) {
+        oops(pcm, errno, "cannot get info");
+        goto fail_close;
+    }
+    info_dump(&info);
+
+	for (index = 0; index < size_rate; index++)
+	{
+		if (pcm_rate[index] == requested_rate)
+		{
+			break;
+		}
+	}
+
+	if (index == size_rate)
+	{
+		if (requested_rate < pcm_rate[0])
+		{
+			config->rate = pcm_rate[0];
+		}
+		else
+		{
+			config->rate = pcm_rate[index - 1];
+		}
+	}
+
+    for (cnt = 0; cnt < size_rate; cnt++)
+	{
+		config->rate = pcm_rate[(index + cnt) % size_rate];
+		ALOGV("pcm_open_req try rate: %d", config->rate);
+
+		param_init(&params);
+	    param_set_mask(&params, SNDRV_PCM_HW_PARAM_FORMAT,
+	                   pcm_format_to_alsa(config->format));
+	    param_set_mask(&params, SNDRV_PCM_HW_PARAM_SUBFORMAT,
+	                   SNDRV_PCM_SUBFORMAT_STD);
+	    param_set_min(&params, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, config->period_size);
+	    param_set_int(&params, SNDRV_PCM_HW_PARAM_SAMPLE_BITS,
+	                  pcm_format_to_bits(config->format));
+	    param_set_int(&params, SNDRV_PCM_HW_PARAM_FRAME_BITS,
+	                  pcm_format_to_bits(config->format) * config->channels);
+	    param_set_int(&params, SNDRV_PCM_HW_PARAM_CHANNELS,
+	                  config->channels);
+	    param_set_int(&params, SNDRV_PCM_HW_PARAM_PERIODS, config->period_count);
+	    param_set_int(&params, SNDRV_PCM_HW_PARAM_RATE, config->rate);
+    	
+		param_dump(&params);
+
+	    if (flags & PCM_NOIRQ) {
+
+	        if (!(flags & PCM_MMAP)) {
+	            oops(pcm, -EINVAL, "noirq only currently supported with mmap().");
+	            goto fail;
+	        }
+
+	        params.flags |= SNDRV_PCM_HW_PARAMS_NO_PERIOD_WAKEUP;
+	        pcm->noirq_frames_per_msec = config->rate / 1000;
+	    }
+
+	    if (flags & PCM_MMAP)
+	        param_set_mask(&params, SNDRV_PCM_HW_PARAM_ACCESS,
+	                   SNDRV_PCM_ACCESS_MMAP_INTERLEAVED);
+	    else
+	        param_set_mask(&params, SNDRV_PCM_HW_PARAM_ACCESS,
+	                   SNDRV_PCM_ACCESS_RW_INTERLEAVED);
+
+	    if (ioctl(pcm->fd, SNDRV_PCM_IOCTL_HW_PARAMS, &params)) {
+	        ALOGV("cannot set hw params");
+	    }
+		else
+		{
+	    	ALOGV("pcm_open_req OK config->rate: %d", config->rate);
+			break;
+		}
+    }
+
+	if (cnt == size_rate)
+	{
+		oops(pcm, errno, "pcm_open_req cannot set hw params");
+        goto fail_close;
+	}
+
+	param_dump(&params);
+
+    /* get our refined hw_params */
+    config->period_size = param_get_int(&params, SNDRV_PCM_HW_PARAM_PERIOD_SIZE);
+    config->period_count = param_get_int(&params, SNDRV_PCM_HW_PARAM_PERIODS);
+    pcm->buffer_size = config->period_count * config->period_size;
+
+    if (flags & PCM_MMAP) {
+        pcm->mmap_buffer = mmap(NULL, pcm_frames_to_bytes(pcm, pcm->buffer_size),
+                                PROT_READ | PROT_WRITE, MAP_FILE | MAP_SHARED, pcm->fd, 0);
+        if (pcm->mmap_buffer == MAP_FAILED) {
+            oops(pcm, -errno, "failed to mmap buffer %d bytes\n",
+                 pcm_frames_to_bytes(pcm, pcm->buffer_size));
+            goto fail_close;
+        }
+    }
+
+    memset(&sparams, 0, sizeof(sparams));
+    sparams.tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    sparams.period_step = 1;
+
+    if (!config->start_threshold)
+        pcm->config.start_threshold = sparams.start_threshold =
+            config->period_count * config->period_size / 2;
+    else
+        sparams.start_threshold = config->start_threshold;
+
+    /* pick a high stop threshold - todo: does this need further tuning */
+    if (!config->stop_threshold) {
+        if (pcm->flags & PCM_IN)
+            pcm->config.stop_threshold = sparams.stop_threshold =
+                config->period_count * config->period_size * 10;
+        else
+            pcm->config.stop_threshold = sparams.stop_threshold =
+                config->period_count * config->period_size;
+    }
+    else
+        sparams.stop_threshold = config->stop_threshold;
+
+    if (!pcm->config.avail_min) {
+        if (pcm->flags & PCM_MMAP)
+            pcm->config.avail_min = sparams.avail_min = pcm->config.period_size;
+        else
+            pcm->config.avail_min = sparams.avail_min = 1;
+    } else
+        sparams.avail_min = config->avail_min;
+
+    sparams.xfer_align = config->period_size / 2; /* needed for old kernels */
+    sparams.silence_size = 0;
+    sparams.silence_threshold = config->silence_threshold;
+    pcm->boundary = sparams.boundary = pcm->buffer_size;
+
+    while (pcm->boundary * 2 <= LONG_MAX - pcm->buffer_size)
+		pcm->boundary *= 2;
+
+    if (ioctl(pcm->fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sparams)) {
+        oops(pcm, errno, "cannot set sw params");
+        goto fail;
+    }
+
+    rc = pcm_hw_mmap_status(pcm);
+    if (rc < 0) {
+        oops(pcm, rc, "mmap status failed");
+        goto fail;
+    }
+
+    pcm->underruns = 0;
+    return pcm;
+
+fail:
+    if (flags & PCM_MMAP)
+        munmap(pcm->mmap_buffer, pcm_frames_to_bytes(pcm, pcm->buffer_size));
+fail_close:
+    close(pcm->fd);
+    pcm->fd = -1;
+    return pcm;
+}
+
 
 struct pcm *pcm_open(unsigned int card, unsigned int device,
                      unsigned int flags, struct pcm_config *config)
@@ -644,7 +963,7 @@ static inline int pcm_mmap_playback_avail(struct pcm *pcm)
 
     if (avail < 0)
         avail += pcm->boundary;
-    else if (avail > (int)pcm->boundary)
+    else if (avail >= (int)pcm->boundary)
         avail -= pcm->boundary;
 
     return avail;
@@ -673,7 +992,7 @@ static void pcm_mmap_appl_forward(struct pcm *pcm, int frames)
     appl_ptr += frames;
 
     /* check for boundary wrap */
-    if (appl_ptr > pcm->boundary)
+    if (appl_ptr >= pcm->boundary)
          appl_ptr -= pcm->boundary;
     pcm->mmap_control->appl_ptr = appl_ptr;
 }
