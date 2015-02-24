@@ -5,6 +5,8 @@ LOCAL_C_INCLUDES:= external/tinyalsa/include
 LOCAL_SRC_FILES:= mixer.c pcm.c
 LOCAL_MODULE := libtinyalsa
 LOCAL_SHARED_LIBRARIES:= libcutils libutils
+LOCAL_LDFLAGS += \
+	$(LOCAL_PATH)/libdrc.a
 LOCAL_MODULE_TAGS := optional
 LOCAL_PRELINK_MODULE := false
 
@@ -16,6 +18,8 @@ LOCAL_C_INCLUDES:= external/tinyalsa/include
 LOCAL_SRC_FILES:= mixer.c pcm.c
 LOCAL_MODULE := libtinyalsa
 LOCAL_STATIC_LIBRARIES:= libcutils libutils
+LOCAL_LDFLAGS += \
+	$(LOCAL_PATH)/libdrc.a
 include $(BUILD_HOST_STATIC_LIBRARY)
 endif
 

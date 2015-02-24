@@ -106,6 +106,8 @@ struct pcm_config {
      * (pcm_open() called with PCM_MMAP flag set).   Use 0 for default.
      */
     int avail_min;
+    unsigned int in_init_channels;//keep the record init channels
+
 };
 
 /* PCM parameters */
@@ -137,6 +139,10 @@ enum mixer_ctl_type {
 
     MIXER_CTL_TYPE_MAX,
 };
+
+/* Open and close a stream */
+struct pcm *pcm_open_req(unsigned int card, unsigned int device,
+                     unsigned int flags, struct pcm_config *config, int requested_rate);
 
 /* Open and close a stream */
 struct pcm *pcm_open(unsigned int card, unsigned int device,
@@ -192,6 +198,7 @@ int pcm_get_htimestamp(struct pcm *pcm, unsigned int *avail,
  */
 int pcm_write(struct pcm *pcm, const void *data, unsigned int count);
 int pcm_read(struct pcm *pcm, void *data, unsigned int count);
+int pcm_read_ex(struct pcm *pcm, void *data, unsigned int count);
 
 /*
  * mmap() support.
@@ -216,6 +223,8 @@ int pcm_wait(struct pcm *pcm, int timeout);
  * Only accepted if opened with PCM_MMAP and PCM_NOIRQ flags
  */
 int pcm_set_avail_min(struct pcm *pcm, int avail_min);
+
+int pcm_get_node_number(char *name);
 
 /*
  * MIXER API
