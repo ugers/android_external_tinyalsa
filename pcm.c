@@ -1303,3 +1303,59 @@ int pcm_ioctl(struct pcm *pcm, int request, ...)
 
     return ioctl(pcm->fd, request, arg);
 }
+
+int pcm_get_node_number(char *name)
+{
+	char card[32];
+	char id[32];
+	int i = 0;
+	int j = 0;
+	int fd = 0;
+	int ret = 0;
+
+	for(i = 0; i < 10; i++){
+		memset(card, 0, 32);
+		memset(id, 0, 32);
+
+		/* "/sys/class/sound/cardx" */
+		sprintf(card, "/sys/class/sound/card%d", i);
+		ret = access(card, F_OK);
+		if(ret != 0){
+			continue;
+		}
+
+		/* "/sys/class/sound/cardx/id" */
+		strcat(card, "/id");
+		ret = access(card, F_OK);
+		if(ret != 0){
+			continue;
+		}
+
+		/* compare */
+		fd = open(card, O_RDONLY);
+		if(fd < 0){
+			continue;
+		}
+
+		ret = read(fd, id, 32);
+		if(ret < 0){
+			close(fd);
+			continue;
+		}
+
+		/* ?????¡ì¨´? */
+		for(j = 0; j < 32; j++){
+			if(id[j] == 0x0a){
+		            id[j] = 0;
+			}
+		}
+
+		if(!strcmp(id, name)){
+			close(fd);
+			return i;
+		}
+
+		close(fd);
+	}
+	return -1;
+}
